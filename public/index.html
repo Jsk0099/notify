@@ -21,6 +21,7 @@
   <h1>Messages</h1>
   <p id="status">Connecting…</p>
   <button id="notify" hidden>Enable notifications</button>
+  <button id="clear" hidden>Clear</button>
   <ul id="list"></ul>
   <div id="toast" role="status" aria-live="polite"></div>
 
@@ -33,6 +34,16 @@
     if (window.Notification?.permission === 'default') $('notify').hidden = false;
     $('notify').onclick = async () => { await Notification.requestPermission(); $('notify').hidden = true; };
 
+    // Clear is per browser: the server still keeps history, so remember the newest cleared id and skip up to it.
+    let cleared = 0, newest = 0;
+    try { cleared = Number(localStorage.getItem('cleared')) || 0; } catch {}
+    $('clear').onclick = () => {
+      cleared = newest;
+      try { localStorage.setItem('cleared', cleared); } catch {}
+      $('list').replaceChildren();
+      $('clear').hidden = true;
+    };
+
     let live = false, toastTimer;
     const es = new EventSource('/api/stream?key=' + encodeURIComponent(key));
     es.onopen = () => ($('status').textContent = 'Connected');
@@ -42,6 +53,9 @@
 
     es.onmessage = async (e) => {
       const { id, msg } = JSON.parse(e.data);
+      if (id <= cleared) return;
+      newest = Math.max(newest, id);
+      $('clear').hidden = false;
       const li = document.createElement('li');
       li.textContent = msg; // textContent: a message is never rendered as HTML
       const time = document.createElement('small');
