@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Messages</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #f5f5f7; color: #111; }
+    h1 { font-size: 1.4rem; margin: 0 0 8px; }
+    #status { color: #666; font-size: .9rem; }
+    button { font-size: 1rem; padding: 10px 14px; border-radius: 8px; border: 0; background: #2563eb; color: #fff; }
+    ul { list-style: none; padding: 0; }
+    li { background: #fff; border-radius: 10px; padding: 12px; margin-bottom: 8px; box-shadow: 0 1px 2px #0002; word-wrap: break-word; }
+    li small { display: block; color: #888; margin-top: 4px; }
+    #toast { position: fixed; left: 16px; right: 16px; top: 16px; background: #111; color: #fff; padding: 14px; border-radius: 10px;
+             opacity: 0; transform: translateY(-20px); transition: .3s; pointer-events: none; }
+    #toast.show { opacity: 1; transform: none; }
+  </style>
+</head>
+<body>
+  <h1>Messages</h1>
+  <p id="status">Connecting…</p>
+  <button id="notify" hidden>Enable notifications</button>
+  <ul id="list"></ul>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const key = new URLSearchParams(location.search).get('key') || '';
+    navigator.serviceWorker?.register('/sw.js');
+
+    // Mobile browsers only allow the permission prompt from a tap.
+    if (window.Notification?.permission === 'default') $('notify').hidden = false;
+    $('notify').onclick = async () => { await Notification.requestPermission(); $('notify').hidden = true; };
+
+    let live = false, toastTimer;
+    const es = new EventSource('/api/stream?key=' + encodeURIComponent(key));
+    es.onopen = () => ($('status').textContent = 'Connected');
+    es.onerror = () => ($('status').textContent =
+      es.readyState === EventSource.CLOSED ? 'Disconnected (check ?key= in the URL)' : 'Reconnecting…');
+    es.addEventListener('ready', () => (live = true));
+
+    es.onmessage = async (e) => {
+      const { id, msg } = JSON.parse(e.data);
+      const li = document.createElement('li');
+      li.textContent = msg; // textContent: a message is never rendered as HTML
+      const time = document.createElement('small');
+      time.textContent = new Date(Number(id.split('-')[0])).toLocaleString();
+      li.append(time);
+      $('list').prepend(li);
+      if (!live) return; // history loaded on page open: show it, don't notify
+
+      $('toast').textContent = msg;
+      $('toast').classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4000);
+      navigator.vibrate?.(200);
+      if (window.Notification?.permission === 'granted') {
+        (await navigator.serviceWorker.ready).showNotification('New message', { body: msg, tag: id });
+      }
+    };
+  </script>
+</body>
+</html>
