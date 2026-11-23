@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: msg-notify
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: SEND_KEY
+        generateValue: true
+      - key: VIEW_KEY
+        generateValue: true

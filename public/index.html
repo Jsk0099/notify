@@ -45,7 +45,7 @@
       const li = document.createElement('li');
       li.textContent = msg; // textContent: a message is never rendered as HTML
       const time = document.createElement('small');
-      time.textContent = new Date(Number(id.split('-')[0])).toLocaleString();
+      time.textContent = new Date(id).toLocaleString();
       li.append(time);
       $('list').prepend(li);
       if (!live) return; // history loaded on page open: show it, don't notify
@@ -56,7 +56,7 @@
       toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4000);
       navigator.vibrate?.(200);
       if (window.Notification?.permission === 'granted') {
-        (await navigator.serviceWorker.ready).showNotification('New message', { body: msg, tag: id });
+        (await navigator.serviceWorker.ready).showNotification('New message', { body: msg, tag: String(id) });
       }
     };
   </script>
