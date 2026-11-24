@@ -1,10 +1,14 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { readFile, mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 process.env.SEND_KEY = 's';
 process.env.VIEW_KEY = 'v';
 process.env.PORT = '0';
+process.env.SUBS_FILE = join(await mkdtemp(join(tmpdir(), 'notify-')), 'subs.json');
 const { server } = await import('./server.js');
 await once(server, 'listening');
 const base = `http://localhost:${server.address().port}`;
@@ -49,4 +53,19 @@ test('stream gets history, then live messages, and resumes after Last-Event-ID',
   const page = await fetch(base + '/');
   assert.equal(page.status, 200);
   assert.equal((await fetch(base + '/nope')).status, 404);
+});
+
+test('subscribe validates and saves the push subscription', async () => {
+  const sub = (k, body) => fetch(`${base}/api/subscribe?key=${k}`, { method: 'POST', body });
+  const good = { endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' }, extra: 'dropped' };
+  assert.equal((await sub('x', JSON.stringify(good))).status, 401);
+  assert.equal((await sub('v', '{bad json')).status, 400);
+  assert.equal((await sub('v', JSON.stringify({ ...good, endpoint: 'http://insecure' }))).status, 400);
+  assert.equal((await sub('v', 'x'.repeat(5000))).status, 413);
+  assert.equal((await fetch(`${base}/api/subscribe?key=v`)).status, 405);
+  assert.equal((await sub('v', JSON.stringify(good))).status, 200);
+  assert.deepEqual(JSON.parse(await readFile(process.env.SUBS_FILE, 'utf8')),
+    [{ endpoint: good.endpoint, keys: good.keys }]);
+  assert.equal((await fetch(`${base}/api/vapid`)).status, 404); // no VAPID keys in this test env
+  assert.equal((await fetch(`${base}/manifest.json`)).status, 200);
 });

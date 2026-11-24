@@ -1,15 +1,33 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import * as webpush from 'web-push';
 
-const { SEND_KEY, VIEW_KEY, PORT = 3000 } = process.env;
+const { SEND_KEY, VIEW_KEY, PORT = 3000, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY,
+  VAPID_SUBJECT = 'mailto:admin@example.com', SUBS_FILE = 'subscriptions.json' } = process.env;
+const pushOn = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+if (pushOn) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 const STREAM_MS = 5 * 60_000; // reconnect every 5 min: keeps free hosts awake while a page is open
 const clients = new Set();
 const history = []; // ponytail: in memory, lost on restart; add a DB only if you need history across restarts
 let lastId = 0;
+// Push subscriptions by endpoint. Saved to a file so a restart keeps them (the page also re-sends its own on every open).
+const subs = new Map(JSON.parse(await readFile(SUBS_FILE, 'utf8').catch(() => '[]')).map((s) => [s.endpoint, s]));
+const saveSubs = () => writeFile(SUBS_FILE, JSON.stringify([...subs.values()])).catch((e) => console.error('save subs', e));
+const isSub = (s) => /^https:\/\//.test(s?.endpoint) && typeof s.keys?.p256dh === 'string' && typeof s.keys?.auth === 'string';
 
 const json = (res, code, body) => res.writeHead(code, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
 const push = (res, m) => res.write(`id: ${m.id}\ndata: ${JSON.stringify(m)}\n\n`);
-const files = { '/': ['index.html', 'text/html'], '/sw.js': ['sw.js', 'text/javascript'] };
+const files = {
+  '/': ['index.html', 'text/html'], '/sw.js': ['sw.js', 'text/javascript'], '/manifest.json': ['manifest.json', 'application/manifest+json'],
+  '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'],
+};
+
+// urgency high: Android delivers it at once even in Doze. TTL: a phone that is off gets it within a day.
+const sendPush = (m) => Promise.all([...subs.values()].map((s) =>
+  webpush.sendNotification(s, JSON.stringify(m), { TTL: 86400, urgency: 'high', timeout: 10_000 }).catch((e) => {
+    if (e.statusCode === 404 || e.statusCode === 410) { subs.delete(s.endpoint); saveSubs(); } // phone unsubscribed or app removed
+    else console.error('push failed', e.statusCode ?? e.message, e.body ?? '');
+  })));
 
 export const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local');
@@ -26,7 +44,24 @@ export const server = createServer(async (req, res) => {
     history.push(m);
     if (history.length > 100) history.shift();
     for (const c of clients) push(c, m);
-    return json(res, 200, { ok: true, id: m.id, delivered: clients.size });
+    if (pushOn) await sendPush(m);
+    return json(res, 200, { ok: true, id: m.id, delivered: clients.size, pushed: pushOn ? subs.size : 0 });
+  }
+
+  if (url.pathname === '/api/vapid') return pushOn ? json(res, 200, { key: VAPID_PUBLIC_KEY }) : json(res, 404, { error: 'push not configured' });
+
+  // POST /api/subscribe?key=VIEW_KEY, body = the browser's PushSubscription JSON
+  if (url.pathname === '/api/subscribe') {
+    if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+    if (!VIEW_KEY || key !== VIEW_KEY) return json(res, 401, { error: 'invalid key' });
+    let body = '';
+    for await (const chunk of req) if ((body += chunk).length > 4096) return json(res, 413, { error: 'too large' });
+    let sub;
+    try { sub = JSON.parse(body); } catch {}
+    if (!isSub(sub)) return json(res, 400, { error: 'invalid subscription' });
+    subs.set(sub.endpoint, { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } });
+    await saveSubs();
+    return json(res, 200, { ok: true });
   }
 
   // SSE: GET /api/stream?key=VIEW_KEY

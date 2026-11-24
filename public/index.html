@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Messages</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#2563eb">
+  <link rel="apple-touch-icon" href="/icon-192.png">
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #f5f5f7; color: #111; }
     h1 { font-size: 1.4rem; margin: 0 0 8px; }
@@ -27,12 +30,32 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const key = new URLSearchParams(location.search).get('key') || '';
+    // The installed app opens at "/" without ?key=, so remember the key from the first visit.
+    let key = new URLSearchParams(location.search).get('key') || '';
+    try { key ? localStorage.setItem('key', key) : (key = localStorage.getItem('key') || ''); } catch {}
     navigator.serviceWorker?.register('/sw.js');
+
+    // Web Push: lets the server wake the phone when this app and the browser are closed.
+    async function subscribe() {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const r = await fetch('/api/vapid');
+        if (!r.ok || !reg.pushManager) return; // push not configured on the server, or iOS app not added to Home Screen
+        const vapid = (await r.json()).key.replace(/-/g, '+').replace(/_/g, '/');
+        const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({
+          userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(vapid), (c) => c.charCodeAt(0)),
+        });
+        await fetch('/api/subscribe?key=' + encodeURIComponent(key), { method: 'POST', body: JSON.stringify(sub) });
+      } catch (err) { console.error('push subscribe failed', err); }
+    }
 
     // Mobile browsers only allow the permission prompt from a tap.
     if (window.Notification?.permission === 'default') $('notify').hidden = false;
-    $('notify').onclick = async () => { await Notification.requestPermission(); $('notify').hidden = true; };
+    if (window.Notification?.permission === 'granted') subscribe(); // re-send on every open: server may have restarted
+    $('notify').onclick = async () => {
+      if (await Notification.requestPermission() === 'granted') subscribe();
+      $('notify').hidden = true;
+    };
 
     // Clear is per browser: the server still keeps history, so remember the newest cleared id and skip up to it.
     let cleared = 0, newest = 0;

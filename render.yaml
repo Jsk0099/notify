@@ -10,3 +10,8 @@ services:
         generateValue: true
       - key: VIEW_KEY
         generateValue: true
+      # Generate once with `npx web-push generate-vapid-keys` and paste both in. Never change them: phones would stop getting pushes.
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
